@@ -12,7 +12,7 @@ import (
 )
 
 // GetSaramaClient sets up a kafka client
-func GetSaramaClient(brokers string) sarama.Client {
+func GetSaramaClient(brokers ...string) sarama.Client {
 	config := sarama.NewConfig()
 	config.Version = sarama.V0_10_1_0
 	config.Consumer.Return.Errors = true
@@ -20,7 +20,7 @@ func GetSaramaClient(brokers string) sarama.Client {
 	config.Metadata.Retry.Max = 10
 	config.Net.MaxOpenRequests = 10
 
-	client, err := sarama.NewClient(strings.Split(brokers, ","), config)
+	client, err := sarama.NewClient(brokers, config)
 
 	if err != nil {
 		log.Fatal("Failed to start client: ", err)
@@ -48,13 +48,17 @@ func GetSaramaConsumer(brokers string, consumerGroup string, topics []string) *c
 }
 
 // GenerateOffsetRequests generates the offset requests which can be used in the GetBrokerTopicOffsets function
-func GenerateOffsetRequests(client sarama.Client, time int64) (requests map[*sarama.Broker]*sarama.OffsetRequest) {
+func GenerateOffsetRequests(client sarama.Client, time int64, topics ...string) (requests map[*sarama.Broker]*sarama.OffsetRequest) {
+	var err error
 	requests = make(map[*sarama.Broker]*sarama.OffsetRequest)
 
-	topics, err := client.Topics()
-	if err != nil {
-		log.Fatal("Failed to fetch topics: ", err)
+	if len(topics) == 0 {
+		topics, err = client.Topics()
+		if err != nil {
+			log.Fatal("Failed to fetch topics: ", err)
+		}
 	}
+
 	for _, topic := range topics {
 		partitions, err := client.Partitions(topic)
 		if err != nil {
@@ -98,6 +102,38 @@ func GetBrokerTopicOffsets(broker *sarama.Broker, request *sarama.OffsetRequest,
 			}
 		}
 	}
+}
+
+// FetchTopicOffsets fetches topic offsets
+func FetchTopicOffsets(client sarama.Client, offset int64, topic string) (topicOffsets map[int32]TopicPartitionOffset) {
+	requests := GenerateOffsetRequests(client, offset, topic)
+
+	var wg, wg2 sync.WaitGroup
+	topicOffsetChannel := make(chan TopicPartitionOffset, 20)
+	wg.Add(len(requests))
+	for broker, request := range requests {
+		// Fetch topic offsets (log end)
+		go func(broker *sarama.Broker, request *sarama.OffsetRequest) {
+			defer wg.Done()
+			GetBrokerTopicOffsets(broker, request, topicOffsetChannel)
+		}(broker, request)
+	}
+
+	// Setup lookup table for topic offsets
+	topicOffsets = make(map[int32]TopicPartitionOffset)
+	go func() {
+		defer wg2.Done()
+		wg2.Add(1)
+		for topicOffset := range topicOffsetChannel {
+			topicOffsets[topicOffset.Partition] = topicOffset
+		}
+	}()
+
+	wg.Wait()
+	close(topicOffsetChannel)
+	wg2.Wait()
+
+	return topicOffsets
 }
 
 // FetchOffsets fetches group and topic offsets (where the topic offset can be sarama.OffsetNewest/OffsetOldest or the time in milliseconds)
