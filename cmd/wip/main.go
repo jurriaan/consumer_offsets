@@ -163,6 +163,25 @@ func printMessages(messages chan *sarama.ConsumerMessage, maxMessages int, print
 	}
 }
 
+func processErrors(pc sarama.PartitionConsumer) {
+	for err := range pc.Errors() {
+		log.Printf("error: we got an error while consuming one of the partitions: %v", err)
+	}
+}
+
+func processMessages(pc sarama.PartitionConsumer, partitionEndOffset *int64, partitionCloser chan struct{}, messages chan *sarama.ConsumerMessage, wg *sync.WaitGroup) {
+	defer wg.Done()
+	for message := range pc.Messages() {
+		if partitionEndOffset != nil {
+			if message.Offset >= *partitionEndOffset {
+				close(partitionCloser)
+				break
+			}
+		}
+		messages <- message
+	}
+}
+
 func consumePartitions(consumer sarama.Consumer, partitionOffsets, endOffsets map[int32]kafkatools.TopicPartitionOffset) (messages chan *sarama.ConsumerMessage, closing chan struct{}) {
 	var wg sync.WaitGroup
 	messages = make(chan *sarama.ConsumerMessage)
@@ -174,6 +193,8 @@ func consumePartitions(consumer sarama.Consumer, partitionOffsets, endOffsets ma
 		if err != nil {
 			log.Panicf("ERROR: Failed to start consumer for partition %d: %s", offset.Partition, err)
 		}
+
+		go processErrors(pc)
 
 		partitionCloser := make(chan struct{})
 		go func(pc sarama.PartitionConsumer) {
@@ -188,29 +209,14 @@ func consumePartitions(consumer sarama.Consumer, partitionOffsets, endOffsets ma
 		}(pc)
 
 		wg.Add(1)
-		partitionEndOffset := int64(-1)
+
 		if len(endOffsets) != 0 {
-			partitionEndOffset = endOffsets[offset.Partition].Offset
+			partitionEndOffset := endOffsets[offset.Partition].Offset
+
+			go processMessages(pc, &partitionEndOffset, partitionCloser, messages, &wg)
+		} else {
+			go processMessages(pc, nil, partitionCloser, messages, &wg)
 		}
-
-		go func(pc sarama.PartitionConsumer, partitionEndOffset int64, partitionCloser chan struct{}) {
-			defer wg.Done()
-			for message := range pc.Messages() {
-				if partitionEndOffset != -1 {
-					if message.Offset >= partitionEndOffset {
-						close(partitionCloser)
-						break
-					}
-				}
-				messages <- message
-			}
-		}(pc, partitionEndOffset, partitionCloser)
-
-		go func(pc sarama.PartitionConsumer) {
-			for err := range pc.Errors() {
-				log.Printf("error: we got an error on one of the partitions: %v", err)
-			}
-		}(pc)
 	}
 
 	go func() {
