@@ -17,6 +17,14 @@ var messages = []*sarama.ConsumerMessage{
 	&sarama.ConsumerMessage{Value: []byte("d"), Offset: 4},
 }
 
+func TestParseDateOpt(t *testing.T) {
+        output := parseDateOpt("2008-09-08T22:47:31-07:00")
+
+        if output != 1220939251000 {
+                t.Errorf("%d does not equal 1220939251000 (ms)", output)
+        }
+}
+
 func TestPrintMessagesCount(t *testing.T) {
 	var strings []string
 
