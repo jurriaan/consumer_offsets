@@ -163,7 +163,7 @@ func printMessages(messages chan *sarama.ConsumerMessage, maxMessages int, print
 	}
 }
 
-func consumePartitions(consumer sarama.Consumer, partitionOffsets map[int32]kafkatools.TopicPartitionOffset, endOffsets map[int32]kafkatools.TopicPartitionOffset) (messages chan *sarama.ConsumerMessage, closing chan struct{}) {
+func consumePartitions(consumer sarama.Consumer, partitionOffsets, endOffsets map[int32]kafkatools.TopicPartitionOffset) (messages chan *sarama.ConsumerMessage, closing chan struct{}) {
 	var wg sync.WaitGroup
 	messages = make(chan *sarama.ConsumerMessage)
 	closing = make(chan struct{})
