@@ -20,7 +20,7 @@ var (
 	usage       = `reset_consumer_group - a tool to reset the consumer group offset for a specific topic
 
 usage:
-  wip [options] 
+  wip --topic <topic> --broker <broker,..> [options]
 
 options:
   -h --help                  show this screen.
@@ -56,14 +56,7 @@ func main() {
 		log.Panicf("[PANIC] We couldn't parse doc opts params: %v", err)
 	}
 
-	if docOpts["--broker"] == nil {
-		log.Fatal("You have to provide a broker")
-	}
 	brokers := strings.Split(docOpts["--broker"].(string), ",")
-
-	if docOpts["--topic"] == nil {
-		log.Fatal("You have to provide a topic when consuming")
-	}
 	topic := docOpts["--topic"].(string)
 
 	client := kafkatools.GetSaramaClient(brokers...)
@@ -115,10 +108,10 @@ func main() {
 	printMessages(messages, count)
 	close(closing)
 
-	err = client.Close()
-	if err != nil {
+	if err = client.Close(); err != nil {
 		log.Fatal("Could not properly close the client")
 	}
+
 	log.Println("Connection closed. Bye.")
 }
 
