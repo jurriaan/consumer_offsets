@@ -105,7 +105,7 @@ func main() {
 
 	messages, closing := consumePartitions(consumer, partitionOffsets, endOffsets)
 
-	printMessages(messages, count)
+	printMessages(messages, count, func(str string) { fmt.Println(str) })
 	close(closing)
 
 	if err = client.Close(); err != nil {
@@ -115,11 +115,11 @@ func main() {
 	log.Println("Connection closed. Bye.")
 }
 
-func printMessages(messages chan *sarama.ConsumerMessage, maxMessages int) {
+func printMessages(messages chan *sarama.ConsumerMessage, maxMessages int, printer func(string)) {
 	counter := 0
 
 	for msg := range messages {
-		fmt.Println(string(msg.Value))
+		printer(string(msg.Value))
 
 		if maxMessages != -1 {
 			counter++
