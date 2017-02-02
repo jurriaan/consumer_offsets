@@ -47,47 +47,33 @@ func parseDateOpt(dateOpt interface{}) int64 {
 	return date.UnixNano() / (int64(time.Millisecond) / int64(time.Nanosecond))
 }
 
-func main() {
-	var endOffsets map[int32]kafkatools.TopicPartitionOffset
+type options struct {
+	brokers     []string
+	startOffset *int64
+	endOffset   *int64
+	partition   *int32
+	topic       string
+	count       int
+}
 
+func parseOptions() options {
 	docOpts, err := docopt.Parse(usage, nil, true, fmt.Sprintf(versionInfo, version, gitrev), false)
-
 	if err != nil {
 		log.Panicf("[PANIC] We couldn't parse doc opts params: %v", err)
 	}
 
-	brokers := strings.Split(docOpts["--broker"].(string), ",")
-	topic := docOpts["--topic"].(string)
-
-	client := kafkatools.GetSaramaClient(brokers...)
-
-	offset := sarama.OffsetNewest
+	var startOffset, endOffset = new(int64), new(int64)
+	*startOffset = sarama.OffsetNewest
 	if docOpts["--start-date"] != nil {
-		offset = parseDateOpt(docOpts["--start-date"])
-	}
-
-	log.Println("Fetching offsets")
-	partitionOffsets := kafkatools.FetchTopicOffsets(client, offset, topic)
-
-	if docOpts["--partition"] != nil {
-		partition, err := strconv.Atoi(docOpts["--partition"].(string))
-		if err != nil {
-			log.Fatal("Invalid partition specified: ", err)
-		}
-
-		val, found := partitionOffsets[int32(partition)]
-		if !found {
-			log.Fatalf("Partition %d not found for topic %s", partition, topic)
-		}
-
-		partitionOffsets = make(map[int32]kafkatools.TopicPartitionOffset)
-		partitionOffsets[val.Partition] = val
+		*startOffset = parseDateOpt(docOpts["--start-date"])
 	}
 
 	if docOpts["--end-date"] != nil {
-		endOffsets = kafkatools.FetchTopicOffsets(client, parseDateOpt(docOpts["--end-date"]), topic)
+		*endOffset = parseDateOpt(docOpts["--end-date"])
 	} else if docOpts["--exit"].(bool) {
-		endOffsets = kafkatools.FetchTopicOffsets(client, sarama.OffsetNewest, topic)
+		*endOffset = sarama.OffsetNewest
+	} else {
+		endOffset = nil
 	}
 
 	count := -1
@@ -98,6 +84,52 @@ func main() {
 		}
 	}
 
+	var partition = new(int32)
+	if docOpts["--partition"] != nil {
+		if part, err := strconv.Atoi(docOpts["--partition"].(string)); err == nil {
+			*partition = int32(part)
+		} else {
+			log.Fatal("Invalid partition specified: ", err)
+		}
+	} else {
+		partition = nil
+	}
+
+	parsedOptions := options{
+		brokers:     strings.Split(docOpts["--broker"].(string), ","),
+		topic:       docOpts["--topic"].(string),
+		startOffset: startOffset,
+		endOffset:   endOffset,
+		partition:   partition,
+		count:       count,
+	}
+
+	return parsedOptions
+}
+
+func main() {
+	var endOffsets map[int32]kafkatools.TopicPartitionOffset
+
+	parsedOptions := parseOptions()
+	client := kafkatools.GetSaramaClient(parsedOptions.brokers...)
+
+	log.Println("Fetching offsets")
+	partitionOffsets := kafkatools.FetchTopicOffsets(client, *parsedOptions.startOffset, parsedOptions.topic)
+
+	if parsedOptions.partition != nil {
+		val, found := partitionOffsets[*parsedOptions.partition]
+		if !found {
+			log.Fatalf("Partition %d not found for topic %s", *parsedOptions.partition, parsedOptions.topic)
+		}
+
+		partitionOffsets = make(map[int32]kafkatools.TopicPartitionOffset)
+		partitionOffsets[val.Partition] = val
+	}
+
+	if parsedOptions.endOffset != nil {
+		endOffsets = kafkatools.FetchTopicOffsets(client, *parsedOptions.endOffset, parsedOptions.topic)
+	}
+
 	consumer, err := sarama.NewConsumerFromClient(client)
 	if err != nil {
 		log.Fatalf("Could not start consumer: %v", err)
@@ -105,7 +137,7 @@ func main() {
 
 	messages, closing := consumePartitions(consumer, partitionOffsets, endOffsets)
 
-	printMessages(messages, count, func(str string) { fmt.Println(str) })
+	printMessages(messages, parsedOptions.count, func(str string) { fmt.Println(str) })
 	close(closing)
 
 	if err = client.Close(); err != nil {
