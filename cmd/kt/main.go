@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"strconv"
 	"strings"
@@ -16,11 +17,11 @@ import (
 var (
 	version     = "0.1"
 	gitrev      = "unknown"
-	versionInfo = `reset_consumer_group %s (git rev %s)`
-	usage       = `reset_consumer_group - a tool to reset the consumer group offset for a specific topic
+	versionInfo = `kt %s (git rev %s)`
+	usage       = `kt - kafka cli tool
 
 usage:
-  wip --topic <topic> --broker <broker,..> [options]
+  kt consume --topic <topic> --broker <broker,..> [options]
 
 options:
   -h --help                  show this screen.
@@ -54,6 +55,8 @@ type options struct {
 	topic       string
 	count       int
 }
+
+type offsetMap map[int32]kafkatools.TopicPartitionOffset
 
 func parseOptions() options {
 	docOpts, err := docopt.Parse(usage, nil, true, fmt.Sprintf(versionInfo, version, gitrev), false)
@@ -107,7 +110,7 @@ func parseOptions() options {
 }
 
 func main() {
-	var endOffsets map[int32]kafkatools.TopicPartitionOffset
+	var endOffsets offsetMap
 
 	parsedOptions := parseOptions()
 	client := kafkatools.GetSaramaClient(parsedOptions.brokers...)
@@ -121,7 +124,7 @@ func main() {
 			log.Fatalf("Partition %d not found for topic %s", *parsedOptions.partition, parsedOptions.topic)
 		}
 
-		partitionOffsets = make(map[int32]kafkatools.TopicPartitionOffset)
+		partitionOffsets = make(offsetMap)
 		partitionOffsets[val.Partition] = val
 	}
 
@@ -181,7 +184,7 @@ func processMessages(pc sarama.PartitionConsumer, partitionEndOffset *int64, par
 	}
 }
 
-func consumerCloser(pc sarama.PartitionConsumer, partition int32, closing, partitionCloser chan struct{}) {
+func consumerCloser(pc io.Closer, partition int32, closing, partitionCloser chan struct{}) {
 	select {
 	case <-closing:
 	case <-partitionCloser:
@@ -192,7 +195,7 @@ func consumerCloser(pc sarama.PartitionConsumer, partition int32, closing, parti
 	}
 }
 
-func consumePartitions(consumer sarama.Consumer, partitionOffsets, endOffsets map[int32]kafkatools.TopicPartitionOffset) (messages chan *sarama.ConsumerMessage, closing chan struct{}) {
+func consumePartitions(consumer sarama.Consumer, partitionOffsets, endOffsets offsetMap) (messages chan *sarama.ConsumerMessage, closing chan struct{}) {
 	var wg sync.WaitGroup
 	messages = make(chan *sarama.ConsumerMessage)
 	closing = make(chan struct{})
