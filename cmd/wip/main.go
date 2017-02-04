@@ -28,7 +28,6 @@ options:
   -t, --topic <topic>        the topic
   -b, --broker <broker,..>   the brokers to connect to
   -o, --offset <offset>      offset to start consuming from: beginning | end | <value> (absolute offset) | -<value> (relative offset) TODO
-  -q, --quiet                be quiet
   -p, --partition <n>        consume a single partition
 	--start-date <timestamp>   start consuming from the specified timestamp
 	--end-date <timestamp>     stop consuming until the specified timestamp
@@ -182,6 +181,17 @@ func processMessages(pc sarama.PartitionConsumer, partitionEndOffset *int64, par
 	}
 }
 
+func consumerCloser(pc sarama.PartitionConsumer, partition int32, closing, partitionCloser chan struct{}) {
+	select {
+	case <-closing:
+	case <-partitionCloser:
+	}
+
+	if err := pc.Close(); err != nil {
+		log.Panicf("ERROR: Failed to close consumer for partition %d: %s", partition, err)
+	}
+}
+
 func consumePartitions(consumer sarama.Consumer, partitionOffsets, endOffsets map[int32]kafkatools.TopicPartitionOffset) (messages chan *sarama.ConsumerMessage, closing chan struct{}) {
 	var wg sync.WaitGroup
 	messages = make(chan *sarama.ConsumerMessage)
@@ -194,29 +204,17 @@ func consumePartitions(consumer sarama.Consumer, partitionOffsets, endOffsets ma
 			log.Panicf("ERROR: Failed to start consumer for partition %d: %s", offset.Partition, err)
 		}
 
-		go processErrors(pc)
-
+		var partitionEndOffset *int64
+		if endOffset, ok := endOffsets[offset.Partition]; ok {
+			partitionEndOffset = new(int64)
+			*partitionEndOffset = endOffset.Offset
+		}
 		partitionCloser := make(chan struct{})
-		go func(pc sarama.PartitionConsumer) {
-			select {
-			case <-closing:
-			case <-partitionCloser:
-			}
-			err := pc.Close()
-			if err != nil {
-				log.Panicf("ERROR: Failed to close consumer for partition %d: %s", offset.Partition, err)
-			}
-		}(pc)
 
 		wg.Add(1)
-
-		if len(endOffsets) != 0 {
-			partitionEndOffset := endOffsets[offset.Partition].Offset
-
-			go processMessages(pc, &partitionEndOffset, partitionCloser, messages, &wg)
-		} else {
-			go processMessages(pc, nil, partitionCloser, messages, &wg)
-		}
+		go consumerCloser(pc, offset.Partition, closing, partitionCloser)
+		go processMessages(pc, partitionEndOffset, partitionCloser, messages, &wg)
+		go processErrors(pc)
 	}
 
 	go func() {
