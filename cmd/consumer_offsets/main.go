@@ -10,6 +10,7 @@ import (
 
 	"strconv"
 
+	"github.com/DataDog/datadog-go/statsd"
 	"github.com/Shopify/sarama"
 	docopt "github.com/docopt/docopt-go"
 	influxdb "github.com/influxdata/influxdb/client/v2"
@@ -32,6 +33,7 @@ options:
   --broker [broker]     the kafka bootstrap broker
   --at-time [timestamp] fetch offsets at a specific timestamp
   --influxdb [url]      send the data to influxdb (url format: influxdb://user:pass@host:port/database)
+  --dogstatsd [url]     send the data to dogstatsd (url format: dogstatsd://host:port/cluster_name
 `
 )
 
@@ -69,6 +71,32 @@ func getInfluxClient(urlStr string) (client influxdb.Client, batchConfig influxd
 	return client, batchConfig
 }
 
+func getDogStatsdClient(urlStr string) (*statsd.Client, string) {
+	u, err := url.Parse(urlStr)
+	if err != nil {
+		log.Fatalf("error parsing dogstatsd url %v: %v", urlStr, err)
+	}
+
+	if u.Scheme != "dogstatsd" {
+		log.Fatalf("error: we expect dogstatsd url to start with 'dogstatsd' scheme but got %v", u.Scheme)
+	}
+
+	if len(u.Path) == 0 {
+		log.Fatalln("We expect dogstatsd to have a path to indicate the cluster name, it will be used to add cluster" +
+			" tag to the dogstatsd metrics to easily differentiatie between clusters")
+	}
+
+	clusterName := u.Path[1:]
+	log.Printf("Connecting to %s: cluster name: %s", u.Host, clusterName)
+
+	client, err := statsd.New(u.Host)
+	if err != nil {
+		log.Fatalln("Error: ", err)
+	}
+
+	return client, clusterName
+}
+
 func main() {
 	docOpts, err := docopt.Parse(usage, nil, true, fmt.Sprintf(versionInfo, version, gitrev), false)
 
@@ -93,6 +121,16 @@ func main() {
 			groupOffsets, topicOffsets := kafkatools.FetchOffsets(client, sarama.OffsetNewest)
 			writeToInflux(influxClient, batchConfig, groupOffsets, topicOffsets)
 		}
+	} else if docOpts["--dogstatsd"] != nil {
+		dogstatsdClient, clusterName := getDogStatsdClient(docOpts["--dogstatsd"].(string))
+
+		ticker := time.NewTicker(time.Second)
+		for range ticker.C {
+			log.Println("Sending metrics to DataDog")
+			groupOffsets, topicOffsets := kafkatools.FetchOffsets(client, sarama.OffsetNewest)
+
+			writeToDogStatsd(dogstatsdClient, groupOffsets, topicOffsets, clusterName)
+		}
 	} else {
 		offset := sarama.OffsetNewest
 
@@ -108,6 +146,97 @@ func main() {
 		groupOffsets, topicOffsets := kafkatools.FetchOffsets(client, offset)
 		printTable(groupOffsets, topicOffsets)
 	}
+}
+
+func writeToDogStatsd(client *statsd.Client, groupOffsets kafkatools.GroupOffsetSlice, topicOffsets map[string]map[int32]kafkatools.TopicPartitionOffset, cluster string) {
+	err := writeGroupOffsetToDogstatsd(client, topicOffsets, groupOffsets, cluster)
+	if err != nil {
+		log.Fatalf("We couldn't send consumer group offsets to datadog: %v", err)
+	}
+	err = writeTopicOffsettoDogstatsd(client, topicOffsets, cluster)
+	if err != nil {
+		log.Fatalf("We couldn't send topic offsets to datadog: %v", err)
+	}
+
+	log.Println("Updated dogstatsd stats")
+}
+
+func writeGroupOffsetToDogstatsd(client *statsd.Client, topicOffsets map[string]map[int32]kafkatools.TopicPartitionOffset, groupOffsets kafkatools.GroupOffsetSlice, cluster string) error {
+	for _, groupOffset := range groupOffsets {
+		for _, topicOffset := range groupOffset.GroupTopicOffsets {
+			var totalPartitionOffset, totalGroupOffset, totalLag float64
+
+			tags := []string{
+				"consumerGroup:" + groupOffset.Group,
+				"topic:" + topicOffset.Topic,
+				"cluster:" + cluster,
+			}
+
+			for _, partitionOffset := range topicOffset.TopicPartitionOffsets {
+				var gOffset, tOffset, lag float64
+
+				gOffset = float64(partitionOffset.Offset)
+				tOffset = float64(topicOffsets[topicOffset.Topic][partitionOffset.Partition].Offset)
+				lag = tOffset - gOffset
+
+				totalPartitionOffset += tOffset
+				if gOffset >= 0 {
+					totalGroupOffset += gOffset
+					totalLag += lag
+				}
+
+				pTags := make([]string, len(tags))
+				copy(pTags, tags)
+				pTags = append(pTags, "partition:"+strconv.Itoa(int(partitionOffset.Partition)))
+
+				err := client.Gauge("kafka.consumer_group.offset", gOffset, pTags, 1)
+				if err != nil {
+					return err
+				}
+				err = client.Gauge("kafka.consumer_group.lag", lag, pTags, 1)
+				if err != nil {
+					return err
+				}
+			}
+
+			err := client.Gauge("kafka.consumer_group.lag.total", totalLag, tags, 1)
+			if err != nil {
+				return err
+			}
+
+			err = client.Gauge("kafka.consumer_group.offset.total", totalGroupOffset, tags, 1)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func writeTopicOffsettoDogstatsd(client *statsd.Client, topicOffsets map[string]map[int32]kafkatools.TopicPartitionOffset, cluster string) error {
+	for topic, partitionMap := range topicOffsets {
+		var totalOffset int64
+		tags := []string{"topic:" + topic, "cluster:" + cluster}
+		for partition, offset := range partitionMap {
+
+			pTags := make([]string, len(tags))
+			copy(pTags, tags)
+			pTags = append(pTags, "partition:"+strconv.Itoa(int(partition)))
+
+			totalOffset += offset.Offset
+
+			err := client.Gauge("kafka.topic.offset", float64(offset.Offset), pTags, 1)
+			if err != nil {
+				return err
+			}
+		}
+
+		err := client.Gauge("kafka.topic.offset.total", float64(totalOffset), tags, 1)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func writeToInflux(client influxdb.Client, batchConfig influxdb.BatchPointsConfig, groupOffsets kafkatools.GroupOffsetSlice, topicOffsets map[string]map[int32]kafkatools.TopicPartitionOffset) {
