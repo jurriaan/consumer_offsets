@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
-	url "net/url"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -19,10 +19,11 @@ import (
 )
 
 var (
-	version     = "0.1"
-	gitrev      = "unknown"
-	versionInfo = `consumer_offsets %s (git rev %s)`
-	usage       = `consumer_offsets - A tool for monitoring kafka consumer offsets and lag
+	possibleEnvironments = []string{"production", "staging", "approval", "development"}
+	version              = "0.1"
+	gitrev               = "unknown"
+	versionInfo          = `consumer_offsets %s (git rev %s)`
+	usage                = `consumer_offsets - A tool for monitoring kafka consumer offsets and lag
 
 usage:
   consumer_offsets [options]
@@ -170,6 +171,7 @@ func writeGroupOffsetToDogstatsd(client *statsd.Client, topicOffsets map[string]
 				"consumerGroup:" + groupOffset.Group,
 				"topic:" + topicOffset.Topic,
 				"cluster:" + cluster,
+				"env:" + getEnvironmentFromTopicName(topicOffset.Topic),
 			}
 
 			for _, partitionOffset := range topicOffset.TopicPartitionOffsets {
@@ -216,7 +218,7 @@ func writeGroupOffsetToDogstatsd(client *statsd.Client, topicOffsets map[string]
 func writeTopicOffsettoDogstatsd(client *statsd.Client, topicOffsets map[string]map[int32]kafkatools.TopicPartitionOffset, cluster string) error {
 	for topic, partitionMap := range topicOffsets {
 		var totalOffset int64
-		tags := []string{"topic:" + topic, "cluster:" + cluster}
+		tags := []string{"topic:" + topic, "cluster:" + cluster, "env:" + getEnvironmentFromTopicName(topic)}
 		for partition, offset := range partitionMap {
 
 			pTags := make([]string, len(tags))
@@ -419,4 +421,17 @@ func printTable(groupOffsets kafkatools.GroupOffsetSlice, topicOffsets map[strin
 
 	table.SetAlignment(tablewriter.ALIGN_LEFT)
 	table.Render()
+}
+
+func getEnvironmentFromTopicName(topic string) string {
+	s := strings.Split(topic, "-")
+	pe := s[len(s)-1]
+
+	for i := range possibleEnvironments {
+		if possibleEnvironments[i] == pe {
+			return pe
+		}
+	}
+
+	return "production"
 }
