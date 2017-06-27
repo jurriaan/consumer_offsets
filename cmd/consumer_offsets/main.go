@@ -106,7 +106,6 @@ func main() {
 
 	tickTime := time.Second * 10
 	if docOpts["--sync-frequency"] != nil {
-
 		tickTime, err = time.ParseDuration(docOpts["--sync-frequency"].(string))
 		if err != nil {
 			log.Fatalf("We couldn't parse --sync-frequency: %v", err)
@@ -120,39 +119,51 @@ func main() {
 	client := kafkatools.GetSaramaClient(broker)
 
 	if docOpts["--influxdb"] != nil {
-		influxClient, batchConfig := getInfluxClient(docOpts["--influxdb"].(string))
-
-		ticker := time.NewTicker(tickTime)
-		for range ticker.C {
-			log.Println("Sending metrics to InfluxDB")
-			groupOffsets, topicOffsets := kafkatools.FetchOffsets(client, sarama.OffsetNewest)
-			writeToInflux(influxClient, batchConfig, groupOffsets, topicOffsets)
-		}
+		exportToInfluxDB(docOpts, client, tickTime)
 	} else if docOpts["--dogstatsd"] != nil {
-		dogstatsdClient, clusterName := getDogStatsdClient(docOpts["--dogstatsd"].(string))
-
-		ticker := time.NewTicker(tickTime)
-		for range ticker.C {
-			log.Println("Sending metrics to DataDog")
-			groupOffsets, topicOffsets := kafkatools.FetchOffsets(client, sarama.OffsetNewest)
-
-			writeToDogStatsd(dogstatsdClient, groupOffsets, topicOffsets, clusterName)
-		}
+		exportToDogstatsd(docOpts, client, tickTime)
 	} else {
-		offset := sarama.OffsetNewest
-
-		if docOpts["--at-time"] != nil {
-			atTime, err := time.Parse(time.RFC3339, docOpts["--at-time"].(string))
-			if err != nil {
-				log.Fatal("Invalid time format specified (RFC3339 required): ", err)
-			}
-
-			// Compute time in milliseconds
-			offset = atTime.UnixNano() / (int64(time.Millisecond) / int64(time.Nanosecond))
-		}
-		groupOffsets, topicOffsets := kafkatools.FetchOffsets(client, offset)
-		printTable(groupOffsets, topicOffsets)
+		printOffset(docOpts, client)
 	}
+}
+
+func exportToDogstatsd(docOpts map[string]interface{}, client sarama.Client, tickTime time.Duration){
+	dogstatsdClient, clusterName := getDogStatsdClient(docOpts["--dogstatsd"].(string))
+
+	ticker := time.NewTicker(tickTime)
+	for range ticker.C {
+		log.Println("Sending metrics to DataDog")
+		groupOffsets, topicOffsets := kafkatools.FetchOffsets(client, sarama.OffsetNewest)
+
+		writeToDogStatsd(dogstatsdClient, groupOffsets, topicOffsets, clusterName)
+	}
+}
+
+func exportToInfluxDB(docOpts map[string]interface{}, client sarama.Client, tickTime time.Duration){
+	influxClient, batchConfig := getInfluxClient(docOpts["--influxdb"].(string))
+
+	ticker := time.NewTicker(tickTime)
+	for range ticker.C {
+		log.Println("Sending metrics to InfluxDB")
+		groupOffsets, topicOffsets := kafkatools.FetchOffsets(client, sarama.OffsetNewest)
+		writeToInflux(influxClient, batchConfig, groupOffsets, topicOffsets)
+	}
+}
+
+func printOffset(docOpts map[string]interface{}, client sarama.Client){
+	offset := sarama.OffsetNewest
+
+	if docOpts["--at-time"] != nil {
+		atTime, err := time.Parse(time.RFC3339, docOpts["--at-time"].(string))
+		if err != nil {
+			log.Fatal("Invalid time format specified (RFC3339 required): ", err)
+		}
+
+		// Compute time in milliseconds
+		offset = atTime.UnixNano() / (int64(time.Millisecond) / int64(time.Nanosecond))
+	}
+	groupOffsets, topicOffsets := kafkatools.FetchOffsets(client, offset)
+	printTable(groupOffsets, topicOffsets)
 }
 
 func writeToDogStatsd(client *statsd.Client, groupOffsets kafkatools.GroupOffsetSlice, topicOffsets map[string]map[int32]kafkatools.TopicPartitionOffset, cluster string) {
