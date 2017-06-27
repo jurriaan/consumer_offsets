@@ -33,7 +33,8 @@ options:
   --broker [broker]     the kafka bootstrap broker
   --at-time [timestamp] fetch offsets at a specific timestamp
   --influxdb [url]      send the data to influxdb (url format: influxdb://user:pass@host:port/database)
-  --dogstatsd [url]     send the data to dogstatsd (url format: dogstatsd://host:port/cluster_name
+  --dogstatsd [url]     send the data to dogstatsd (url format: dogstatsd://host:port/cluster_name)
+  --sync-frequency [seconds] indicate the time between syncs [default: 10s]
 `
 )
 
@@ -99,23 +100,29 @@ func getDogStatsdClient(urlStr string) (*statsd.Client, string) {
 
 func main() {
 	docOpts, err := docopt.Parse(usage, nil, true, fmt.Sprintf(versionInfo, version, gitrev), false)
-
 	if err != nil {
-		log.Panicf("[PANIC] We couldn't parse doc opts params: %v", err)
+		log.Fatalf("[PANIC] We couldn't parse doc opts params: %v", err)
+	}
+
+	tickTime := time.Second * 10
+	if docOpts["--sync-frequency"] != nil {
+
+		tickTime, err = time.ParseDuration(docOpts["--sync-frequency"].(string))
+		if err != nil {
+			log.Fatalf("We couldn't parse --sync-frequency: %v", err)
+		}
 	}
 
 	if docOpts["--broker"] == nil {
 		log.Fatal("You have to provide a broker")
-
 	}
 	broker := docOpts["--broker"].(string)
-
 	client := kafkatools.GetSaramaClient(broker)
 
 	if docOpts["--influxdb"] != nil {
 		influxClient, batchConfig := getInfluxClient(docOpts["--influxdb"].(string))
 
-		ticker := time.NewTicker(time.Second)
+		ticker := time.NewTicker(tickTime)
 		for range ticker.C {
 			log.Println("Sending metrics to InfluxDB")
 			groupOffsets, topicOffsets := kafkatools.FetchOffsets(client, sarama.OffsetNewest)
@@ -124,7 +131,7 @@ func main() {
 	} else if docOpts["--dogstatsd"] != nil {
 		dogstatsdClient, clusterName := getDogStatsdClient(docOpts["--dogstatsd"].(string))
 
-		ticker := time.NewTicker(time.Second)
+		ticker := time.NewTicker(tickTime)
 		for range ticker.C {
 			log.Println("Sending metrics to DataDog")
 			groupOffsets, topicOffsets := kafkatools.FetchOffsets(client, sarama.OffsetNewest)
