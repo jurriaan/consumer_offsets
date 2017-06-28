@@ -34,7 +34,7 @@ options:
   --at-time [timestamp] fetch offsets at a specific timestamp
   --influxdb [url]      send the data to influxdb (url format: influxdb://user:pass@host:port/database)
   --dogstatsd [url]     send the data to dogstatsd (url format: dogstatsd://host:port/cluster_name)
-  --sync-frequency [seconds] indicate the time between syncs [default: 10s]
+  --interval [seconds]  time to wait between sync to external datasources [default: 10s]
 `
 )
 
@@ -84,7 +84,7 @@ func getDogStatsdClient(urlStr string) (*statsd.Client, string) {
 
 	if len(u.Path) == 0 {
 		log.Fatalln("We expect dogstatsd to have a path to indicate the cluster name, it will be used to add cluster" +
-			" tag to the dogstatsd metrics to easily differentiatie between clusters")
+			" tag to the dogstatsd metrics to easily differentiate between clusters")
 	}
 
 	clusterName := u.Path[1:]
@@ -105,10 +105,10 @@ func main() {
 	}
 
 	tickTime := time.Second * 10
-	if docOpts["--sync-frequency"] != nil {
-		tickTime, err = time.ParseDuration(docOpts["--sync-frequency"].(string))
+	if docOpts["--interval"] != nil {
+		tickTime, err = time.ParseDuration(docOpts["--interval"].(string))
 		if err != nil {
-			log.Fatalf("We couldn't parse --sync-frequency: %v", err)
+			log.Fatalf("We couldn't parse --interval: %v", err)
 		}
 	}
 
